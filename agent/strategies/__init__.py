@@ -44,9 +44,11 @@ def covered_call(S: float, T: float, sigma: float, target_delta: float = 0.30) -
     K = strike_for_delta(S, T, sigma, "call", target_delta)
     premium = bs_price(S, K, T, sigma, "call")
     call_leg = TradeLeg("call", K, "sell", premium)
-    # The covering 100 shares, as their own leg -- NOT a new order (this agent never buys stock
-    # outright; the shares must already be held, see agent/risk/gates.py's naked-call check).
-    # Included so agent/backtest/simulator.py's generic simulator scores this trade as an
+    # The covering 100 shares, as their own leg. A live executor (agent/deterministic_agent.py,
+    # agent/multi_agent.py) submits this as a real place_stock_order buy before the short call --
+    # see RiskGate.check()'s covered_call_stock_leg parameter -- so the call is genuinely covered,
+    # not naked. Also included here so agent/backtest/simulator.py's generic simulator scores this
+    # trade as an
     # actual covered call (P&L bounded by the stock's own move, offset by the call premium) --
     # without it, the simulator only ever saw the short call leg and scored covered_call
     # identically to a naked short call, which can show a large, statistically "significant"

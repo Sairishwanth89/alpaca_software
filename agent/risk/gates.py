@@ -120,14 +120,26 @@ class RiskGate:
         permanently shrinking the real budget available to later, legitimate trades this cycle."""
         self.committed_this_cycle = max(0.0, self.committed_this_cycle - (amount or 0.0))
 
-    def check(self, tool_name: str, tool_input: dict, covered_by_paired_long: bool = False) -> dict:
+    def check(self, tool_name: str, tool_input: dict, covered_by_paired_long: bool = False,
+              covered_call_stock_leg: bool = False) -> dict:
         """`covered_by_paired_long` must only be set by a caller that has already verified, from
         its own multi-leg strategy plan, that this specific short call is hedged by a
         further-OTM long call in the *same* order batch (e.g. an iron condor's short_call vs.
         its own long_call) -- never derived from tool_input, so an LLM calling place_option_order
         directly can't set it. It skips the share-ownership requirement for *that one leg only*;
         every other gate below (DTE, backtest validation, capital caps, position count) still
-        applies in full."""
+        applies in full.
+
+        `covered_call_stock_leg` is the same pattern applied to `place_stock_order`: it must only
+        be set by a caller that has already built a covered_call plan and is submitting its stock
+        leg specifically to acquire the 100-share-per-contract cover a following short call needs
+        -- never derived from tool_input, so an LLM can't self-declare an arbitrary directional
+        stock buy as "just covering a call." Without it, `place_stock_order` is out of scope
+        entirely (this agent trades options premium, not directional equity) -- which used to
+        make covered_call structurally impossible to ever execute live, since there was no
+        legitimate path to own the shares its short call needs as cover. Still buy-only (a covering
+        purchase, never a short/directional stock bet) and still passes through the same capital
+        caps as every other order below."""
         if tool_name not in ORDER_TOOLS:
             return {"approved": True}
 
@@ -147,10 +159,60 @@ class RiskGate:
             )
 
         if tool_name == "place_stock_order":
-            return self._reject(
-                "Directional equity orders are out of scope for this agent — it only trades options "
-                "premium strategies (cash-secured puts, covered calls, long calls/puts, credit spreads)."
-            )
+            if not covered_call_stock_leg:
+                return self._reject(
+                    "Directional equity orders are out of scope for this agent — it only trades options "
+                    "premium strategies (cash-secured puts, covered calls, long calls/puts, credit spreads)."
+                )
+            side = (tool_input.get("side") or "").lower()
+            if side != "buy":
+                return self._reject(
+                    "Only a BUY stock order to acquire covered-call cover is permitted here — "
+                    "short/directional stock orders remain out of scope regardless of context."
+                )
+            symbol = tool_input.get("symbol", "")
+            if CONFIG.require_backtest_validation and symbol not in load_cleared_symbols():
+                return self._reject(
+                    f"{symbol} has no strategy that passed the backtest validation gate — refusing "
+                    f"to buy cover shares for an unproven symbol."
+                )
+            try:
+                qty = float(tool_input.get("qty", 0) or 0)
+            except (TypeError, ValueError):
+                return self._reject(f"qty {tool_input.get('qty')!r} is not a number; refusing to submit.")
+            if qty <= 0:
+                return self._reject(f"qty must be positive (got {qty}); refusing to submit.")
+            limit_price = tool_input.get("limit_price")
+            if not limit_price:
+                # A market buy carries no price in tool_input to estimate capital-at-risk from --
+                # without a real number here the per-trade/portfolio caps below would silently pass
+                # a $0 cost through, undercounting real exposure. Require a limit order (as every
+                # other order-placing path in this project already does) so the cap check is real.
+                return self._reject(
+                    "Covered-call stock cover must be a limit order (limit_price required) so its "
+                    "cost can be checked against the capital caps; refusing an unpriced market buy."
+                )
+            capital_at_risk = float(limit_price) * qty
+            max_per_trade = CONFIG.max_allocation_pct_per_trade * self.equity
+            if CONFIG.max_allocation_usd_per_trade > 0:
+                max_per_trade = min(max_per_trade, CONFIG.max_allocation_usd_per_trade)
+            if capital_at_risk > max_per_trade:
+                return self._reject(
+                    f"Estimated cover-share cost ${capital_at_risk:,.0f} exceeds the per-trade cap "
+                    f"${max_per_trade:,.0f}."
+                )
+            max_total = CONFIG.max_total_options_allocation_pct * self.equity
+            if CONFIG.max_total_options_allocation_usd > 0:
+                max_total = min(max_total, CONFIG.max_total_options_allocation_usd)
+            if self.committed_this_cycle + capital_at_risk > max_total:
+                return self._reject(
+                    f"This purchase would push total capital-at-risk this cycle to "
+                    f"${self.committed_this_cycle + capital_at_risk:,.0f}, above the "
+                    f"{CONFIG.max_total_options_allocation_pct:.0%} portfolio cap (${max_total:,.0f})."
+                )
+            self.committed_this_cycle += capital_at_risk
+            self.symbols_committed_this_cycle.add(symbol)
+            return {"approved": True, "estimated_capital_at_risk": round(capital_at_risk, 2)}
 
         if tool_name == "place_crypto_order":
             return self._reject("Crypto orders are out of scope; this agent trades equity options only.")

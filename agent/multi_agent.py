@@ -68,12 +68,17 @@ PROPOSE_TRADE_TOOL = {
             "legs": {
                 "type": "array",
                 "description": "Real OCC option symbols and sides to submit, in the order they should "
-                                "be sent. Required if action=trade.",
+                                "be sent. Required if action=trade. For covered_call specifically, "
+                                "include the covering-shares leg FIRST: {\"symbol\": \"<plain equity "
+                                "ticker, e.g. AAPL>\", \"side\": \"buy\", \"qty\": 100} (not an OCC "
+                                "symbol) — the short call after it will be rejected as naked otherwise, "
+                                "since this account never holds shares it didn't just buy for this reason.",
                 "items": {
                     "type": "object",
                     "properties": {
                         "symbol": {"type": "string", "description": "Real OCC symbol from "
-                                   "get_option_chain/get_option_contracts, e.g. AAPL250321C00150000."},
+                                   "get_option_chain/get_option_contracts, e.g. AAPL250321C00150000 -- "
+                                   "or, only for covered_call's cover-shares leg, the plain equity ticker."},
                         "side": {"type": "string", "enum": ["buy", "sell"]},
                         "qty": {"type": "integer"},
                         "limit_price": {"type": "string"},
@@ -311,10 +316,20 @@ async def run_cycle() -> dict:
         approved_legs = []
         batch_committed = 0.0
         for leg in legs:
-            decision = risk_gate.check("place_option_order", {
-                "symbol": leg.get("symbol"), "side": leg.get("side"), "qty": leg.get("qty", 1),
-                "limit_price": leg.get("limit_price"),
-            }, covered_by_paired_long=_call_leg_is_hedged(leg, legs))
+            # covered_call's cover-shares leg arrives as a plain equity ticker, not an OCC option
+            # symbol (see PROPOSE_TRADE_TOOL's legs description) -- route it through
+            # place_stock_order's own gate instead of treating it as a malformed option order.
+            is_stock_leg = strategy == "covered_call" and parse_occ_symbol(leg.get("symbol") or "") is None
+            if is_stock_leg:
+                decision = risk_gate.check("place_stock_order", {
+                    "symbol": leg.get("symbol"), "side": leg.get("side"), "qty": leg.get("qty", 100),
+                    "limit_price": leg.get("limit_price"),
+                }, covered_call_stock_leg=True)
+            else:
+                decision = risk_gate.check("place_option_order", {
+                    "symbol": leg.get("symbol"), "side": leg.get("side"), "qty": leg.get("qty", 1),
+                    "limit_price": leg.get("limit_price"),
+                }, covered_by_paired_long=_call_leg_is_hedged(leg, legs))
             if not decision.get("approved"):
                 rejections.append(f"{leg.get('symbol')}: {decision.get('reason')}")
                 # Roll back capital already committed by this batch's earlier legs (see the
@@ -324,7 +339,7 @@ async def run_cycle() -> dict:
                 approved_legs = None
                 break
             batch_committed += decision.get("estimated_capital_at_risk") or 0.0
-            approved_legs.append(leg)
+            approved_legs.append({**leg, "_is_stock_leg": is_stock_leg})
 
         if not approved_legs:
             log_event("multi_agent_cycle_complete", proposal=proposal, verdict=verdict,
@@ -337,9 +352,12 @@ async def run_cycle() -> dict:
         # Submit buy (protective) legs before sell legs — same reasoning as
         # deterministic_agent.py: legs aren't atomic, and the Proposer's own leg ordering in
         # its proposal isn't something to trust for this, since a naked short between fills
-        # is a materially worse failure mode than a temporarily-orphaned long option.
+        # is a materially worse failure mode than a temporarily-orphaned long option. The stock
+        # cover leg (if any) sorts alongside other buys, which is correct — it must land before
+        # the short call regardless.
         placed = []
         for leg in sorted(approved_legs, key=lambda l: 0 if l.get("side") == "buy" else 1):
+            tool_name = "place_stock_order" if leg.get("_is_stock_leg") else "place_option_order"
             order_args = {
                 "symbol": leg["symbol"], "side": leg["side"], "qty": str(leg.get("qty", 1)),
                 "type": "limit" if leg.get("limit_price") else "market",
@@ -348,7 +366,7 @@ async def run_cycle() -> dict:
             }
             if leg.get("limit_price"):
                 order_args["limit_price"] = str(leg["limit_price"])
-            order_result = await mcp.call_tool("place_option_order", order_args)
+            order_result = await mcp.call_tool(tool_name, order_args)
             # Alpaca rejecting an order is a normal (non-error) MCP result, not an exception --
             # see parse_order_error's docstring. Without this check, a rejected leg here was
             # logged/alerted/recorded as placed just like a successful one, and the loop would
@@ -366,6 +384,13 @@ async def run_cycle() -> dict:
             alert("order_placed", agent="multi_agent", symbol=proposal.get("symbol"),
                   strategy=proposal.get("strategy"), contract=leg["symbol"], side=leg["side"])
             placed.append(leg["symbol"])
+            if leg.get("_is_stock_leg"):
+                # Same reasoning as deterministic_agent.py: a same-cycle buy won't show up in
+                # risk_gate.open_positions until the next get_all_positions round-trip, but the
+                # short call leg right after this one needs to see the cover as already owned.
+                risk_gate.open_positions[leg["symbol"]] = (
+                    risk_gate.open_positions.get(leg["symbol"], 0) + float(leg.get("qty", 100))
+                )
 
         log_event("multi_agent_cycle_complete", proposal=proposal, verdict=verdict, placed=placed,
                    cost_usd=round(total_cost, 5))

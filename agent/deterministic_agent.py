@@ -166,11 +166,55 @@ async def run_cycle() -> dict:
             sigma = realized_vol(closes, window=20)
             momentum = closes[-1] - closes[-10] if len(closes) >= 10 else 0.0
             theoretical_legs = _build_theoretical_legs(strategy_name, S, sigma, momentum)
-            # covered_call's plan includes a "stock" leg (the covering shares this agent never
-            # buys/sells itself -- see agent/strategies/__init__.py) so the *backtest* simulator
-            # scores its real P&L. It isn't a real OCC contract to look up on the chain, check
-            # against RiskGate, or submit an order for, so it's excluded here, before any of that.
+            # covered_call's plan includes a "stock" leg so the *backtest* simulator scores its
+            # real P&L (see agent/strategies/__init__.py). It isn't a real OCC contract to look up
+            # on the chain or match against real quotes, so it's excluded from the option-leg
+            # matching below -- but for a live covered_call specifically, the 100 covering shares
+            # still need to be genuinely bought before the short call, or the naked-call gate is
+            # correctly going to keep rejecting it (that's the whole point of the gate). Handled
+            # separately, right here, before the option legs are ever checked.
+            stock_leg = next((leg for leg in theoretical_legs if leg.option_type == "stock"), None)
             theoretical_legs = [leg for leg in theoretical_legs if leg.option_type != "stock"]
+
+            if strategy_name == "covered_call" and stock_leg is not None:
+                stock_qty = 100  # one contract's worth of cover; this executor always trades qty=1
+                stock_decision = risk_gate.check("place_stock_order", {
+                    "symbol": symbol, "side": "buy", "qty": str(stock_qty), "limit_price": str(round(S, 2)),
+                }, covered_call_stock_leg=True)
+                if not stock_decision.get("approved"):
+                    reason = stock_decision.get("reason") or ""
+                    result["rejections"].append(f"{symbol}/{strategy_name}: cover-share buy rejected — {reason}")
+                    if "circuit breaker" in reason or "Kill switch" in reason:
+                        alert("order_blocked_critical", agent="deterministic_agent",
+                              symbol=symbol, strategy=strategy_name, reason=reason)
+                    continue
+                stock_order_args = {
+                    "symbol": symbol, "side": "buy", "qty": str(stock_qty), "type": "limit",
+                    "limit_price": str(round(S * 1.01, 2)),  # small marketable margin, same intent as _close_order_args
+                    "position_intent": "buy_to_open",
+                    "client_order_id": f"det-{symbol}-{strategy_name}-cover",
+                }
+                stock_result = await mcp.call_tool("place_stock_order", stock_order_args)
+                stock_order_error = parse_order_error(stock_result)
+                log_event("deterministic_order", symbol=symbol, strategy=strategy_name, leg=symbol,
+                          side="buy", delta_target="stock", limit_price=round(S * 1.01, 2),
+                          result=stock_result[:1500], error=stock_order_error)
+                if stock_order_error:
+                    alert("order_rejected", agent="deterministic_agent", symbol=symbol, strategy=strategy_name,
+                          contract=symbol, side="buy", reason=stock_order_error)
+                    result["rejections"].append(
+                        f"{symbol}/{strategy_name}: cover-share buy rejected by Alpaca — {stock_order_error}"
+                    )
+                    risk_gate.release_commitment(stock_decision.get("estimated_capital_at_risk") or 0.0)
+                    continue
+                alert("order_placed", agent="deterministic_agent", symbol=symbol, strategy=strategy_name,
+                      contract=symbol, side="buy", limit_price=round(S * 1.01, 2))
+                # The just-submitted buy won't show up in risk_gate.open_positions until the next
+                # get_all_positions round-trip (same lag committed_this_cycle/
+                # symbols_committed_this_cycle exist to paper over elsewhere in this gate) -- bump
+                # it locally now so the short call leg's naked-call check, checked next in this
+                # same cycle, correctly sees the cover as already owned.
+                risk_gate.open_positions[symbol] = risk_gate.open_positions.get(symbol, 0) + stock_qty
 
             # Bound strike_price_gte/lte around the strikes the theoretical legs actually need,
             # with a wide margin, so the fetch can't miss them.
