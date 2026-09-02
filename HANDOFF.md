@@ -176,99 +176,112 @@ Over the course of this build:
   **GOOGL `cash_secured_put`** — Sharpe 3.47, 70% win rate, both sub-period halves pass, much
   smaller max drawdown than AMD ever had (~4% of account vs ~18%). This became the new (and, as
   of the last full backtest run, only) validated strategy.
-- **A newly-completed review of the backtest engine itself (§5) found that `covered_call` is
-  simulated as a naked short call, not a real covered position** — the simulator has no code
-  path for a stock leg at all, verified by literally running the code: over a synthetic -17%
-  decline, the true covered-call P&L was -$1,150 while the simulator scored it +$1,915 with a
-  passing Sharpe of 2.33. GOOGL's cleared strategy is `cash_secured_put`, not `covered_call`, so
-  it isn't directly hit by this specific bug — **but the same review also found the bootstrap
-  gate itself resamples overlapping trade windows as if they were independent, empirically
-  measuring a ~14% false-positive rate against a ~2.5% nominal rate on a zero-edge synthetic
-  strategy.** That finding *does* apply to every strategy validated by this engine, GOOGL
-  included. Bottom line: **re-validate GOOGL cash_secured_put's result after fixing the issues in
-  §5 before trusting it as the account's one live strategy.** It may well still hold up — it's a
-  much more conservative, higher-win-rate strategy than AMD ever was — but it hasn't been
-  re-checked against a corrected engine yet.
+- A review of the backtest engine found that `covered_call` was being simulated as a naked short
+  call, not a real covered position (no stock-leg modeling in the simulator at all — verified
+  empirically: over a synthetic -17% decline, true covered-call P&L was -$1,150 while the old
+  simulator scored it +$1,915 with a passing Sharpe of 2.33). **This is now fixed** — see §5,
+  it's no longer in the open bug list.
+- The same round of review found the bootstrap validation gate resamples overlapping trade
+  windows as if they were independent, empirically measuring a ~14% false-positive rate against
+  a ~2.5% nominal rate. **This has been partially fixed**: a moving-block bootstrap replaced the
+  plain i.i.d. resample, and two independent adversarial reviewers each measured their own
+  empirical false-positive rate on the fixed code — 7.0% and 6.0% respectively, down from ~14%
+  but still 2-3x the 2.5% nominal target. Both reviewers' own control tests suggest part of the
+  remaining gap is inherent small-sample percentile-bootstrap bias, not purely a block-length
+  problem — see §5 item 2 for the full detail. **Bottom line: GOOGL `cash_secured_put`'s original
+  PASS was produced under the old, more permissive bootstrap** (the ~14%-false-positive version).
+  It has not yet been re-run against the corrected (still-partial) bootstrap. Re-run
+  `python run_backtest.py GOOGL` before continuing to trust that result as the account's one live
+  strategy — it may well still hold (it's a much more conservative, higher-win-rate strategy than
+  AMD ever was, with real margin above the bar on the original run), but that hasn't been
+  re-confirmed against the corrected engine yet.
 
 ## 5. Known bugs and limitations, prioritized — this is the real "what to fix" list
 
-Four independent fresh-eyes reviews ran against this codebase (dead code, general
-cleanup/reuse, the risk-management path, the Alpaca MCP data-retrieval layer), plus a fifth
-against the backtest statistical engine specifically. Some fixes from the first four were
-already being applied to the working tree as this document was written — **check `git status`
-and `git diff` against what's described below before assuming a given item is still open**, the
-descriptions here are what was true as of the reviews completing, not necessarily current disk
-state.
+Five independent fresh-eyes reviews have now run against this codebase across two rounds (dead
+code, general cleanup/reuse, the risk-management path, the Alpaca MCP data-retrieval layer, and
+the backtest statistical engine), with fixes applied and personally re-verified (diffs read,
+regression tests run, not just trusting agent reports) after each round. **This section reflects
+disk state as of commit `f39016a`** — check `git log`/`git status` if you're reading this later,
+in case more has landed since.
 
-### Safety/correctness-critical
+### Fixed and verified (closed, not open items anymore)
 
-1. **`covered_call` is scored as a naked short call in the backtest** — no stock-leg modeling
-   anywhere in `agent/backtest/simulator.py`. Empirically verified wrong-sign P&L in a decline
-   scenario. Fix requires adding a stock-position leg type the simulator actually understands.
-2. **Overlapping trade windows resampled as i.i.d. in the bootstrap** — `STEP_DAYS=7` with
-   `HOLD_DAYS=21` means ~67% overlap between consecutive trades, all from one price path; the
-   bootstrap treats them as independent draws. Empirically measured ~14% false-positive rate vs
-   ~2.5% nominal. This is the single most important finding for trusting *any* validated
-   strategy's numbers — it affects every strategy the engine has ever passed, not just one.
-3. **`enabled_for_paper` is set *before* the extended-retest/sub-period checks run**, only
-   walked back by a `demote()` call — and the whole per-symbol block is wrapped in a bare
-   `except Exception` with no rollback, so a transient failure (e.g. a flaky network fetch
-   during the extended retest) can leave a strategy marked cleared without ever having actually
-   passed the stricter checks.
-4. **`place_option_order`'s result was never checked for success anywhere** — an order/close
-   was logged and alerted as successful even when Alpaca actually rejected it. This directly
-   undermines the buy-before-sell leg-ordering fix meant to prevent naked exposure on a partial
-   multi-leg fill: if the *first* (protective) leg is outright rejected, not just unfilled, the
-   code had no way of knowing and would submit the risk leg anyway. Per the disk-state notes
-   above, fixes for this were actively being applied (`parse_order_error` in
-   `agent/mcp_parsers.py`, wired into `order_manager.py`/`live_agent_openai.py`) — verify this
-   landed everywhere it needs to (`live_agent.py`, `multi_agent.py`, `deterministic_agent.py`
-   too) before trusting it's fully closed. One specific gap flagged directly by a reviewer:
-   `cancel_order_by_id`'s result is still unchecked even after the other fixes landed.
-5. **The portfolio-wide capital cap isn't cumulative across cycles** — `RiskGate` is rebuilt
-   fresh every cycle, and its "capital committed" tracker only ever reflects *that cycle's* new
-   approvals, never what's already open from previous cycles. Run `--loop` for a while and there
-   is effectively no real ceiling on cumulative capital at risk from this specific gate — only
-   Alpaca's own buying-power rejection backstops it.
-6. **`iron_condor` and `covered_call` are structurally unable to execute live at all.** The
+- `covered_call` scored as a naked short call in the backtest (no stock-leg modeling) — fixed:
+  the simulator now understands a `option_type == "stock"` leg, marked directly at the underlying
+  price rather than through Black-Scholes, excluded from options transaction-cost friction.
+- `enabled_for_paper` was set *before* the extended-retest/sub-period checks completed, walked
+  back only by a `demote()` call, with no rollback on a mid-retest exception — fixed: the flag is
+  now flipped exactly once, at the end of the per-strategy block, from the fully combined final
+  outcome; verified with a mock test that a mid-retest exception leaves it `False`, not stranded.
+- ATR-derived stop-loss was computed once from the initial window and reused stale for the
+  extended retest — fixed: the extended retest now derives its own `risk_params` from the
+  extended window's own ATR bars.
+- Plain `iron_condor` used an underlying-distance stop tuned for directional/single-leg
+  structures (forcing ~93% unwarranted stop-outs per an earlier finding) instead of the
+  credit-multiple stop its own `iron_condor_vrp_45_21` sibling correctly uses — fixed: both now
+  use the same credit-multiple stop mechanism.
+- `place_option_order`/`cancel_order_by_id` results were never checked for success — fixed:
+  `parse_order_error` (`agent/mcp_parsers.py`) is wired into every order-placing/closing/canceling
+  call site (`order_manager.py`, `live_agent.py`, `live_agent_openai.py`, `multi_agent.py`,
+  `deterministic_agent.py`) — a rejection is now logged/alerted as a rejection, not a success.
+- Portfolio-wide capital cap wasn't cumulative across cycles — fixed: `RiskGate.update_positions`
+  seeds `committed_this_cycle` from existing positions' estimated capital-at-risk once per
+  process, instead of resetting to zero every cycle.
+- `qty` was never validated as positive in `RiskGate.check()` — fixed: zero/negative qty is now
+  rejected outright rather than silently coerced.
+- Position-count and naked-call-cover checks used a stale, mis-keyed snapshot — fixed: the
+  position-count gate now unions `held_option_roots | open_positions.keys() |
+  symbols_committed_this_cycle`, keyed by underlying root, not full OCC symbol.
+- `committed_this_cycle` had no rollback on an abandoned multi-leg batch — fixed: `release_commitment()`.
+- Dead code removed: `strategy_drift_report`, `price_iron_condor_real_quotes` +
+  `match_strike_by_delta`, `ContractQuote`, `STRATEGY_FUNCS`, `StrategyRegistry.all()`/
+  `.enabled_for_live()`, plus unused `bs_delta`/`Optional`/`field`/`statistics` imports.
+
+### Still open — safety/correctness-relevant
+
+1. **Overlapping trade windows resampled as i.i.d. in the bootstrap — partially fixed, not
+   closed.** A moving-block bootstrap (block length = `HOLD_DAYS // STEP_DAYS` = 3) replaced the
+   plain i.i.d. resample in `agent/backtest/metrics.py`. Two independent adversarial reviewers
+   each ran their own empirical false-positive-rate test (zero-true-edge random walks, engine's
+   own HOLD_DAYS=21/STEP_DAYS=7 timing, n_boot=2000, ci=0.95) and both verdicted
+   **PARTIALLY_FIXED**: measured rates of 7.0% and 6.0%, down substantially from the original
+   ~14% but still 2-3x the 2.5% nominal target. Both reviewers separately found that even a
+   *non-overlapping* control sample doesn't hit exactly 2.5% at this sample size (one measured
+   5.5% on independent trades), suggesting part of the remaining gap is inherent small-sample
+   percentile-bootstrap bias rather than something block-length tuning alone can fully close. One
+   reviewer's own sweep found block_length=5 tested slightly better (7.5% vs 9.5% in their run)
+   than the current default of 3, but the fixing agent deliberately kept the principled
+   `HOLD_DAYS // STEP_DAYS` derivation rather than hand-tuning to one synthetic test — reasonable,
+   but means there may be room for a more rigorous block-length selection method (e.g. a
+   stationary/random-length bootstrap, or an automatic block-length selection procedure) as a
+   next step. **Practical implication: every strategy this engine has ever passed, including
+   GOOGL `cash_secured_put`, was validated under either the old (worse) or new (still imperfect)
+   bootstrap — re-run `python run_backtest.py GOOGL` and treat a PASS as good evidence, not
+   statistical certainty, until this gets tighter.**
+2. **`iron_condor` and `covered_call` are structurally unable to execute live at all.** The
    naked-call gate requires 100 owned shares to sell a call; `place_stock_order` is always
    rejected, so there's no legitimate path to ever own those shares. Every iron condor attempt's
    short-call leg gets silently rejected, killing the whole 4-leg trade — logged as an ordinary
    rejection, not surfaced as the design conflict it is. Both strategies are presented to the
-   agent as valid, tradeable options and simply can never fire.
-7. **`qty` was never validated as positive** in `RiskGate.check()` — a negative quantity
-   (reachable via the LLM-controlled `live_agent.py`/`multi_agent.py` paths, not via
-   `deterministic_agent.py` which hardcodes qty=1) bypasses the naked-call check and can deflate
-   the cycle's committed-capital tracker, opening room for a later oversized trade.
-8. **ATR-derived stop-loss is computed once from the most recent bars of whichever window was
-   fetched and applied uniformly to every trade in that window**, including trades from years
-   earlier in the same backtest — and the extended retest reuses the same stale value rather
-   than recomputing its own ATR.
+   agent as valid, tradeable options and simply can never fire. **Not addressed by either fix
+   round — still open.**
 
 ### Real but lower-severity
 
-9. Position-count and naked-call-cover checks use a stale, mis-keyed snapshot
-   (`open_positions` keyed by full OCC option symbol, not the underlying root) — can both
-   over-count a single multi-leg spread as several "positions" and fail to recognize existing
-   options-only exposure on a symbol as "already held."
-10. `committed_this_cycle` has no rollback when a multi-leg batch aborts partway through.
-11. `CONFIG.watchlist` has no hard code-level enforcement — only prompt text plus the separately
-    togglable backtest-validation gate.
-12. `profit_target_pct` is fully implemented in the simulator but never actually passed by
-    either backtest driver — every validated strategy's numbers reflect hold-to-stop-or-expiration
-    only, not early profit-taking, even for strategies where that's standard practice.
-13. `covered_call`'s `max_loss_per_contract` doesn't net out the premium collected (minor,
-    conservative-direction — makes the strategy look slightly worse than it is, not better).
-14. A meaningful amount of duplicated logic: the Alpaca response-envelope unwrap was
-    hand-copied roughly ten times across five files instead of using the shared
-    `agent/mcp_parsers.py` module consistently; per-strategy dispatch is hand-rolled in three
-    separate places while an unused `StrategyRegistry` abstraction sits there for exactly this;
-    no use of `asyncio.gather` anywhere despite several places awaiting independent MCP calls
-    sequentially.
-15. Several genuinely dead functions/classes (`strategy_drift_report`,
-    `price_iron_condor_real_quotes`, `ContractQuote`, `STRATEGY_FUNCS`,
-    `StrategyRegistry.all()`/`.enabled_for_live()`) and a few unused imports — safe to remove,
-    no behavior change.
+3. `CONFIG.watchlist` has no hard code-level enforcement — only prompt text plus the separately
+   togglable backtest-validation gate.
+4. `profit_target_pct` is fully implemented in the simulator but never actually passed by
+   either backtest driver — every validated strategy's numbers reflect hold-to-stop-or-expiration
+   only, not early profit-taking, even for strategies where that's standard practice.
+5. `covered_call`'s `max_loss_per_contract` doesn't net out the premium collected — actually also
+   fixed in the same pass that added the stock leg (nets out premium now), noted here only in
+   case it regresses.
+6. A meaningful amount of duplicated logic remains: the Alpaca response-envelope unwrap is still
+   hand-copied in places instead of using `agent/mcp_parsers.py` consistently; per-strategy
+   dispatch is hand-rolled in three separate places while `StrategyRegistry` sits there for
+   exactly this; no use of `asyncio.gather` anywhere despite several places awaiting independent
+   MCP calls sequentially.
 
 ### Explicitly disclosed design limitations (not bugs, known tradeoffs)
 
@@ -287,26 +300,29 @@ state.
 
 ## 6. What to actually do next, in order
 
-1. **Read `git status`/`git diff` right now** to see exactly what's already been fixed vs. what
-   in §5 is still open — an autonomous review/fix process was active while this doc was being
-   written, so the disk state may be ahead of this document by the time you read it.
-2. **Fix or at least re-run validation after fixing #1 and #2 in §5** (the covered-call
-   naked-simulation bug and the overlapping-window bootstrap bias) before trusting any strategy's
-   numbers, GOOGL included — these two affect the credibility of every "PASS" this engine has
-   ever produced.
-3. **Fix #6** (iron_condor/covered_call structurally untradeable) or explicitly drop those two
-   strategies from the presented strategy universe until it's fixed — right now the system tells
-   an LLM these are valid choices and then silently fails every time either is attempted.
-4. **Get a genuinely fresh Alpaca paper account** before final submission — the current one has
+1. **Read `git log`/`git status`/`git diff` right now** to confirm what's fixed vs. open in §5 —
+   this doc was last updated against commit `f39016a`; verify nothing's drifted since.
+2. **Re-run `python run_backtest.py GOOGL`** (or the full watchlist) against the now-corrected
+   engine and bootstrap, and treat the result as the current source of truth — the previous
+   GOOGL `cash_secured_put` PASS was produced under a worse (or, now, still-imperfect) bootstrap
+   and hasn't been re-confirmed.
+3. **If you want the statistical gate genuinely tight rather than "much better than before,"**
+   revisit the moving-block-bootstrap's block-length selection (§5 item 1) — a data-driven
+   block-length choice or a stationary bootstrap would likely close more of the remaining
+   6-7%-vs-2.5% gap than the current fixed `HOLD_DAYS // STEP_DAYS` heuristic. Not required to
+   ship, but the honest next step if P&L credibility needs to be airtight.
+4. **Fix or explicitly drop `iron_condor`/`covered_call`** (§5 item 2, structurally untradeable
+   live) from the presented strategy universe until fixed — right now the system tells an LLM
+   these are valid choices and then silently fails every time either is attempted.
+5. **Get a genuinely fresh Alpaca paper account** before final submission — the current one has
    test trades on it and won't be eligible for judging per the rules.
-5. **Run the Claude-driven or OpenAI-driven agent live at least once**, budgeted — as of the
+6. **Run the Claude-driven or OpenAI-driven agent live at least once**, budgeted — as of the
    last check, real autonomous LLM-driven trading activity in the account was still minimal;
    the demo/write-up needs to be able to show the agent actually deciding something, not just
    the deterministic path.
-6. **Submission materials** (video, 1-page write-up, slides) — as of this doc, entirely undone,
+7. **Submission materials** (video, 1-page write-up, slides) — as of this doc, entirely undone,
    and required for judging regardless of how much further engineering happens.
-7. If there's time after the above: the lower-severity items in §5, and the dead-code cleanup
-   (safe, mechanical, low-risk to do last).
+8. If there's time after the above: the remaining lower-severity items in §5 (items 3-6).
 
 ## 7. Setup, quick reference
 
