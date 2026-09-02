@@ -1660,3 +1660,139 @@ Every backtest validation run for every strategy/symbol combination, pass or fai
 - sharpe 95% bootstrap CI: (-3.425, 0.177)
 - rejection reasons: mean-return 95% bootstrap CI (-0.11886, 0.00457) does not exclude zero (lower bound must be > 0); Sharpe 95% bootstrap CI (-3.425, 0.177) does not exclude zero (lower bound must be > 0)
 
+## cash_secured_put / GOOGL -- PASS (2026-09-02)
+
+- trades: 83
+- win_rate: 0.6145
+- profit_factor: 1.659
+- sharpe: 2.605
+- mean_return_pct: 0.005
+- total_pnl_dollars: 7183.72
+- max_drawdown_dollars: -2554.56
+- exit_reason_breakdown: {'expiration': 52, 'stop_loss': 31}
+- mean-return 95% bootstrap CI: (0.00019, 0.00954)
+- sharpe 95% bootstrap CI: (0.102, 5.64)
+
+## cash_secured_put (extended history) / GOOGL -- PASS (2026-09-02)
+
+- trades: 211
+- win_rate: 0.6967
+- profit_factor: 1.55
+- sharpe: 3.471
+- mean_return_pct: 0.00514
+- total_pnl_dollars: 12777.61
+- max_drawdown_dollars: -4092.37
+- exit_reason_breakdown: {'expiration': 152, 'stop_loss': 59}
+- mean-return 95% bootstrap CI: (0.00157, 0.00878)
+- sharpe 95% bootstrap CI: (1.002, 6.701)
+
+## cash_secured_put (sub-period stability) / GOOGL -- PASS (2026-09-02)
+
+- trades: 105
+- win_rate: 0.7619
+- profit_factor: 1.631
+- sharpe: 2.781
+- mean_return_pct: 0.00631
+- total_pnl_dollars: 5662.67
+- max_drawdown_dollars: -4092.37
+- exit_reason_breakdown: {'expiration': 84, 'stop_loss': 21}
+- mean-return 95% bootstrap CI: (0.00024, 0.01184)
+- sharpe 95% bootstrap CI: (0.095, 6.463)
+- notes: second half: passed=False, sharpe=2.094
+
+## covered_call / GOOGL -- PASS (2026-09-02)
+
+- trades: 83
+- win_rate: 0.5783
+- profit_factor: 1.803
+- sharpe: 2.989
+- mean_return_pct: 0.01604
+- total_pnl_dollars: 23070.67
+- max_drawdown_dollars: -7298.0
+- exit_reason_breakdown: {'expiration': 51, 'stop_loss': 32}
+- mean-return 95% bootstrap CI: (0.00172, 0.02984)
+- sharpe 95% bootstrap CI: (0.314, 5.88)
+
+## covered_call (extended history) / GOOGL -- PASS (2026-09-02)
+
+- trades: 211
+- win_rate: 0.6303
+- profit_factor: 1.753
+- sharpe: 4.351
+- mean_return_pct: 0.01598
+- total_pnl_dollars: 43060.04
+- max_drawdown_dollars: -10684.67
+- exit_reason_breakdown: {'expiration': 151, 'stop_loss': 60}
+- mean-return 95% bootstrap CI: (0.00707, 0.02578)
+- sharpe 95% bootstrap CI: (1.913, 7.466)
+
+## covered_call (sub-period stability) / GOOGL -- PASS (2026-09-02)
+
+- trades: 105
+- win_rate: 0.6571
+- profit_factor: 1.724
+- sharpe: 3.003
+- mean_return_pct: 0.01654
+- total_pnl_dollars: 16033.59
+- max_drawdown_dollars: -10684.67
+- exit_reason_breakdown: {'expiration': 84, 'stop_loss': 21}
+- mean-return 95% bootstrap CI: (0.00158, 0.0308)
+- sharpe 95% bootstrap CI: (0.268, 6.252)
+- notes: second half: passed=True, sharpe=3.17
+
+## long_directional / GOOGL -- FAIL (2026-09-02)
+
+- trades: 83
+- win_rate: 0.2771
+- profit_factor: 1.515
+- sharpe: 1.622
+- mean_return_pct: 0.46524
+- total_pnl_dollars: 13515.51
+- max_drawdown_dollars: -7368.85
+- exit_reason_breakdown: {'stop_loss': 43, 'expiration': 40}
+- mean-return 95% bootstrap CI: (-0.22448, 1.36612)
+- sharpe 95% bootstrap CI: (-1.33, 3.521)
+- rejection reasons: mean-return 95% bootstrap CI (-0.22448, 1.36612) does not exclude zero (lower bound must be > 0); Sharpe 95% bootstrap CI (-1.33, 3.521) does not exclude zero (lower bound must be > 0)
+
+## vertical_credit_spread / GOOGL -- FAIL (2026-09-02)
+
+- trades: 83
+- win_rate: 0.6024
+- profit_factor: 1.372
+- sharpe: 1.498
+- mean_return_pct: 0.05757
+- total_pnl_dollars: 2742.46
+- max_drawdown_dollars: -1769.21
+- exit_reason_breakdown: {'expiration': 51, 'stop_loss': 32}
+- mean-return 95% bootstrap CI: (-0.04113, 0.15017)
+- sharpe 95% bootstrap CI: (-0.954, 4.78)
+- rejection reasons: mean-return 95% bootstrap CI (-0.04113, 0.15017) does not exclude zero (lower bound must be > 0); Sharpe 95% bootstrap CI (-0.954, 4.78) does not exclude zero (lower bound must be > 0)
+
+## iron_condor / GOOGL -- FAIL (2026-09-02)
+
+- trades: 83
+- win_rate: 0.5663
+- profit_factor: 0.691
+- sharpe: -3.0
+- mean_return_pct: -0.15928
+- total_pnl_dollars: -4302.19
+- max_drawdown_dollars: -6955.22
+- exit_reason_breakdown: {'stop_loss': 31, 'expiration': 52}
+- mean-return 95% bootstrap CI: (-0.29187, -0.0346)
+- sharpe 95% bootstrap CI: (-5.435, -0.73)
+- rejection reasons: mean-return 95% bootstrap CI (-0.29187, -0.0346) does not exclude zero (lower bound must be > 0); Sharpe 95% bootstrap CI (-5.435, -0.73) does not exclude zero (lower bound must be > 0)
+
+## iron_condor_vrp_45_21 / GOOGL -- FAIL (2026-09-02)
+
+- trades: 76
+- win_rate: 0.4474
+- profit_factor: 0.314
+- sharpe: -4.048
+- mean_return_pct: -0.14003
+- total_pnl_dollars: -7722.88
+- max_drawdown_dollars: -8222.7
+- exit_reason_breakdown: {'time_exit': 62, 'stop_loss': 14}
+- mean-return 95% bootstrap CI: (-0.23282, -0.05293)
+- sharpe 95% bootstrap CI: (-6.285, -1.791)
+- rejection reasons: mean-return 95% bootstrap CI (-0.23282, -0.05293) does not exclude zero (lower bound must be > 0); Sharpe 95% bootstrap CI (-6.285, -1.791) does not exclude zero (lower bound must be > 0)
+

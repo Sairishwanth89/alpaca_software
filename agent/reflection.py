@@ -26,7 +26,6 @@ not a weight update.
 """
 import json
 import os
-import statistics
 from datetime import datetime, timezone
 
 from agent.config import CONFIG
@@ -145,23 +144,3 @@ def summarize_for_prompt(max_entries: int = 10) -> str:
     lines.append(f"  ({len(entries)} total closed positions logged, {n_flagged} with a process flag — "
                   f"a flag means a data/logging gap or a slipped gate, not that the trade lost money)")
     return "\n".join(lines)
-
-
-def strategy_drift_report(strategy_name: str, root_symbol: str, min_live_trades: int = 10) -> dict:
-    """Compares REALIZED performance against what the backtest predicted for
-    this exact strategy/symbol — the statistically honest question ("is the
-    edge still there?"), never asked about a single trade."""
-    entries = [e for e in _load_all() if e.get("strategy") == strategy_name and e.get("root") == root_symbol]
-    if len(entries) < min_live_trades:
-        return {"status": "insufficient_live_trades", "live_trades": len(entries), "need": min_live_trades}
-
-    live_returns = [e["realized_return_pct"] for e in entries if isinstance(e.get("realized_return_pct"), (int, float))]
-    if not live_returns:
-        return {"status": "insufficient_live_trades", "live_trades": len(entries), "need": min_live_trades}
-    live_win_rate = sum(1 for r in live_returns if r > 0) / len(live_returns)
-    return {
-        "status": "comparable",
-        "live_trades": len(entries),
-        "live_win_rate": round(live_win_rate, 3),
-        "live_mean_return_pct": round(statistics.mean(live_returns), 5),
-    }

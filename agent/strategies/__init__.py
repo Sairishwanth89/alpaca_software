@@ -5,7 +5,7 @@ same rules are used in the backtest engine and are described (not
 re-implemented) to Claude in the live agent's system prompt.
 """
 from dataclasses import dataclass
-from agent.options_pricing import bs_price, bs_delta, strike_for_delta
+from agent.options_pricing import bs_price, strike_for_delta
 
 
 @dataclass
@@ -109,10 +109,3 @@ def vertical_credit_spread(S: float, T: float, sigma: float,
                    f"defined-risk volatility play, max loss capped at {max(width - credit, 0) * 100:.0f}.",
     )
 
-
-STRATEGY_FUNCS = {
-    "cash_secured_put": cash_secured_put,
-    "covered_call": covered_call,
-    "vertical_credit_spread": vertical_credit_spread,
-    # long_directional needs a momentum input and is called directly where used
-}

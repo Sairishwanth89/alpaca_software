@@ -57,11 +57,5 @@ class StrategyRegistry:
     def get(self, name: str) -> StrategyAdapter:
         return self._adapters[name]
 
-    def all(self) -> list:
-        return list(self._adapters.values())
-
     def enabled_for_paper(self) -> list:
         return [a for a in self._adapters.values() if a.stage.enabled_for_paper]
-
-    def enabled_for_live(self) -> list:
-        return [a for a in self._adapters.values() if a.stage.enabled_for_live]

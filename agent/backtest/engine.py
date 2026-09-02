@@ -64,6 +64,15 @@ STRATEGY_TIMING = {
         "hold_days": 45, "t_years": 45 / 365, "force_exit_offset": 45 - 21,
         "use_underlying_stop": False, "stop_loss_credit_multiple": 2.0, "vol_window": 45,
     },
+    # Plain iron_condor is the same 4-leg defined-risk credit structure as the VRP variant --
+    # the reasoning above (ATR/underlying-distance stop is tuned for directional/single-leg
+    # structures and forces near-universal, unwarranted stop-outs on a credit structure) applies
+    # regardless of DTE, not just the 45-day variant. Only the stop mechanism changes here; the
+    # hold_days/t_years/force_exit_offset/vol_window stay at module defaults via _timing_for().
+    "iron_condor": {
+        "hold_days": HOLD_DAYS, "t_years": T_YEARS, "force_exit_offset": None,
+        "use_underlying_stop": False, "stop_loss_credit_multiple": 2.0, "vol_window": 20,
+    },
 }
 
 
@@ -184,34 +193,51 @@ def run_backtest(symbols=None) -> dict:
                 initial = _validate_symbol_strategy(strategy_name, closes, symbol, risk_params.stop_loss_price_move)
                 validation = initial["validation"]
                 adapter = registry.get(strategy_name)
-                adapter.promote_to_paper(validation)
                 record_result(strategy_name, symbol, validation)
+
+                # `final_ok`/`demote_reason` accumulate the TRUE final outcome across every stage
+                # below (initial AND extended-retest AND sub-period-stability). The adapter's
+                # enabled_for_paper flag is only ever flipped once, at the very end of this block,
+                # from that fully-combined boolean -- never provisionally set from the initial
+                # (weaker) pass alone and walked back. This also means a mid-retest exception
+                # (e.g. the extended fetch below failing) simply propagates up to the per-symbol
+                # try/except without ever having set enabled_for_paper=True in the first place.
+                final_ok = validation.passed
+                demote_reason = None
 
                 extended_summary = None
                 if validation.passed:
-                    ext_closes, _ = fetch_bars(client, symbol, EXTENDED_LOOKBACK_DAYS)
+                    ext_closes, ext_atr_bars = fetch_bars(client, symbol, EXTENDED_LOOKBACK_DAYS)
                     if len(ext_closes) < 60:
                         # "Anything that PASSes the initial backtest is automatically retested on
                         # a much longer lookback window before it's trusted at all" (module
-                        # docstring) -- but adapter.promote_to_paper() above already set
-                        # enabled_for_paper=True from the initial window alone, and skipping this
-                        # block used to leave it there un-demoted, silently promoting a strategy
-                        # that was never actually retested (only reachable for a symbol with too
-                        # little extended history, e.g. a very recent IPO -- not any current
-                        # watchlist member, but a real gap for whatever the watchlist grows into).
-                        adapter.demote(
+                        # docstring) -- a pass that can't be retested (e.g. a symbol with too
+                        # little extended history, a very recent IPO -- not any current watchlist
+                        # member, but a real gap for whatever the watchlist grows into) is not
+                        # trusted, so it must not clear the final gate either.
+                        final_ok = False
+                        demote_reason = (
                             f"passed on {LOOKBACK_DAYS}d window but extended history has only "
                             f"{len(ext_closes)} bars (<60) — cannot run the required "
                             f"{EXTENDED_LOOKBACK_DAYS}d retest, so this pass is not trusted without it"
                         )
                     if len(ext_closes) >= 60:
+                        # Fresh risk parameters from the extended window's OWN volatility --
+                        # trades from years earlier in this longer window must be risk-managed
+                        # using a stop distance derived from their own contemporaneous ATR, not
+                        # the initial (short-window) risk_params reused stale.
+                        ext_risk_params = derive_risk_parameters(
+                            ext_atr_bars, BACKTEST_ASSUMED_EQUITY, RISK_PCT_PER_TRADE, ATR_WINDOW,
+                            STOP_LOSS_ATR_MULTIPLE
+                        )
                         ext_result = _validate_symbol_strategy(
-                            strategy_name, ext_closes, symbol, risk_params.stop_loss_price_move
+                            strategy_name, ext_closes, symbol, ext_risk_params.stop_loss_price_move
                         )
                         ext_validation = ext_result["validation"]
                         record_result(f"{strategy_name} (extended history)", symbol, ext_validation)
                         if not ext_validation.passed:
-                            adapter.demote(
+                            final_ok = False
+                            demote_reason = (
                                 f"passed on {LOOKBACK_DAYS}d window but failed the "
                                 f"{EXTENDED_LOOKBACK_DAYS}d retest — likely overfit to the short window"
                             )
@@ -227,7 +253,8 @@ def run_backtest(symbols=None) -> dict:
                                           extra_notes=f"second half: passed={sub_period.second_half.passed}, "
                                                       f"sharpe={sub_period.second_half.metrics.get('sharpe')}")
                             if not sub_period.passed:
-                                adapter.demote(
+                                final_ok = False
+                                demote_reason = (
                                     f"passed the {EXTENDED_LOOKBACK_DAYS}d retest but failed sub-period "
                                     f"stability: {'; '.join(sub_period.reasons)}"
                                 )
@@ -248,6 +275,15 @@ def run_backtest(symbols=None) -> dict:
                                 "reasons": sub_period.reasons,
                             },
                         }
+
+                # The single point where enabled_for_paper is ever set, from the fully-combined
+                # final outcome -- see the comment above `final_ok` for why this is the only place.
+                if final_ok:
+                    adapter.promote_to_paper(validation)
+                else:
+                    adapter.stage.validation = validation
+                    if demote_reason:
+                        adapter.demote(demote_reason)
 
                 symbol_report["strategies"][strategy_name] = {
                     "passed_backtest": validation.passed,

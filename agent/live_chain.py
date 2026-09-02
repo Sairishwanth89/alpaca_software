@@ -13,7 +13,6 @@ then fetch the one chosen expiry's full desired strike range on its own
 """
 import json
 from datetime import date, timedelta
-from typing import Optional
 
 from agent.backtest.iron_condor import nearest_expiry
 from agent.mcp_parsers import parse_option_chain_snapshot

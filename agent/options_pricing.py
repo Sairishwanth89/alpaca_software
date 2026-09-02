@@ -8,7 +8,6 @@ is a standard, defensible approximation for ranking strategy families before
 committing a live agent to one of them.
 """
 import math
-from dataclasses import dataclass
 
 RISK_FREE_RATE = 0.045  # approx short-term T-bill yield, used as the discount rate
 
@@ -79,11 +78,3 @@ def realized_vol(closes: list, window: int = 20) -> float:
     mean = sum(rets) / len(rets)
     var = sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)
     return max(math.sqrt(var) * math.sqrt(252), 0.05)
-
-
-@dataclass
-class ContractQuote:
-    strike: float
-    option_type: str
-    price: float
-    delta: float
