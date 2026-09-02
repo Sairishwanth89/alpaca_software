@@ -259,13 +259,32 @@ in case more has landed since.
    GOOGL `cash_secured_put`, was validated under either the old (worse) or new (still imperfect)
    bootstrap — re-run `python run_backtest.py GOOGL` and treat a PASS as good evidence, not
    statistical certainty, until this gets tighter.**
-2. **`iron_condor` and `covered_call` are structurally unable to execute live at all.** The
-   naked-call gate requires 100 owned shares to sell a call; `place_stock_order` is always
-   rejected, so there's no legitimate path to ever own those shares. Every iron condor attempt's
-   short-call leg gets silently rejected, killing the whole 4-leg trade — logged as an ordinary
-   rejection, not surfaced as the design conflict it is. Both strategies are presented to the
-   agent as valid, tradeable options and simply can never fire. **Not addressed by either fix
-   round — still open.**
+2. **`iron_condor`/`covered_call` structural naked-call blocker — fixed for the batch-aware
+   paths, still open for the free-form LLM path.** Two separate causes were found:
+   - `iron_condor`'s short-call leg: already correctly hedged via `covered_by_paired_long` (a
+     `_call_leg_is_hedged` check verified against a real `price_iron_condor()` plan — confirmed
+     `hedged=True` for the short call) in `deterministic_agent.py` and `multi_agent.py`. This was
+     actually already working before this round; the earlier "silently rejected" finding predates
+     the `covered_by_paired_long` fix landing.
+   - `covered_call`'s short call: `place_stock_order` was unconditionally rejected regardless of
+     context, so there was no legitimate way to ever own the 100 covering shares. **Fixed**:
+     `RiskGate.check()` gained `covered_call_stock_leg`, settable only by a caller that has
+     already built a covered_call plan (never derivable from `tool_input`, so an LLM can't
+     self-declare an arbitrary stock buy as "just cover") — still buy-only, still
+     symbol-validated, still capital-capped, requires a limit price. `deterministic_agent.py` now
+     buys the cover shares before the short call and locally reflects the fill so the same-cycle
+     naked-call check sees it; `multi_agent.py`'s Proposer can now include the cover-share leg as
+     a plain equity ticker in its proposal, routed through `place_stock_order` the same way.
+     Verified with a 7-case standalone regression script (unauthorized buy rejected, authorized
+     buy approved, sell-side still blocked even with the flag, naked call rejected pre-cover,
+     approved post-cover, unpriced market buy rejected, oversized buy capped).
+   - **Still genuinely open**: the free-form single-agent LLM paths (`live_agent.py`,
+     `live_agent_openai.py`) call tools one at a time with no batch structure, so there's no way
+     to verify a short call is actually hedged rather than the LLM just asserting it is — neither
+     `iron_condor` nor `covered_call` can safely execute through those two paths yet. If you want
+     them tradeable there too, the LLM would need to submit legs in an order the gate can check
+     against real, already-filled positions (not a same-cycle claim) — not attempted here, flagged
+     as the next real piece of work on this specific bug.
 
 ### Real but lower-severity
 
@@ -311,9 +330,11 @@ in case more has landed since.
    block-length choice or a stationary bootstrap would likely close more of the remaining
    6-7%-vs-2.5% gap than the current fixed `HOLD_DAYS // STEP_DAYS` heuristic. Not required to
    ship, but the honest next step if P&L credibility needs to be airtight.
-4. **Fix or explicitly drop `iron_condor`/`covered_call`** (§5 item 2, structurally untradeable
-   live) from the presented strategy universe until fixed — right now the system tells an LLM
-   these are valid choices and then silently fails every time either is attempted.
+4. `iron_condor`/`covered_call` now execute correctly through `deterministic_agent.py` and
+   `multi_agent.py` (§5 item 2, fixed) — they still can't safely fire through `live_agent.py`/
+   `live_agent_openai.py`. Either extend those two paths to verify real hedged positions before
+   allowing a short call, or keep steering the single-agent LLM demo toward `cash_secured_put`
+   (the strategy that's actually cleared validation there) for now.
 5. **Get a genuinely fresh Alpaca paper account** before final submission — the current one has
    test trades on it and won't be eligible for judging per the rules.
 6. **Run the Claude-driven or OpenAI-driven agent live at least once**, budgeted — as of the
